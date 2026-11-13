@@ -127,7 +127,7 @@ def main():
         result = post_to_kit(payload, key)
         bid = result.get("broadcast", {}).get("id")
         receipt.write_text(json.dumps(
-            {"broadcast_id": bid, "send_at": send_at, "subject": meta["subject"]},
+            {"broadcast_id": bid, "send_at": payload["send_at"], "status": status, "subject": meta["subject"]},
             indent=2))
         print(f"{'saved as Kit draft (not sent)' if status == 'kit-draft' else 'scheduled'} {issue.name} → Kit broadcast {bid} at {send_at} UTC")
 
