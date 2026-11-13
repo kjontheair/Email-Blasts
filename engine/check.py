@@ -2,6 +2,7 @@
 subscriber count. Writes reports/kit-check.json (no email addresses)."""
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -11,11 +12,19 @@ ROOT = Path(__file__).resolve().parent.parent
 KEY = os.environ.get("KIT_API_KEY", "")
 
 
-def get(path):
-    req = Request("https://api.kit.com/v4" + path,
-                  headers={"X-Kit-Api-Key": KEY, "Accept": "application/json"})
-    with urlopen(req, timeout=60) as r:
-        return json.load(r)
+def get(path, tries=6):
+    """Kit allows 120 requests a minute, so pace calls and wait out a 429."""
+    for attempt in range(tries):
+        time.sleep(0.6)
+        req = Request("https://api.kit.com/v4" + path,
+                      headers={"X-Kit-Api-Key": KEY, "Accept": "application/json"})
+        try:
+            with urlopen(req, timeout=60) as r:
+                return json.load(r)
+        except HTTPError as e:
+            if e.code != 429 or attempt == tries - 1:
+                raise
+            time.sleep(30)
 
 
 def main():
