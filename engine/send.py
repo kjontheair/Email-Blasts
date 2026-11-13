@@ -46,18 +46,45 @@ def kit_tags(key: str) -> dict:
         after = page.get("end_cursor")
 
 
-def audience_filter(meta, key: str):
-    """`to:` missing or 'everyone' = whole list; otherwise one tag or a list of tags."""
-    to = meta.get("to", "everyone")
-    names = [to] if isinstance(to, str) else list(to)
-    if [n.strip().lower() for n in names] == ["everyone"]:
-        return None
-    tags = kit_tags(key)
+# Tags whose people only get emails about that topic. An "everyone" email
+# leaves them out unless the issue says `include: grayson` (or the tag name).
+PROTECTED = {
+    "grayson": ["KJ's Krew:Send me Grayson Foundation updates"],
+}
+
+
+def _names(value):
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else list(value)
+
+
+def _ids(names, tags):
     missing = [n for n in names if n.strip().lower() not in tags]
     if missing:
         raise SystemExit(f"No Kit tag named: {', '.join(missing)} — nothing was sent")
-    ids = [tags[n.strip().lower()] for n in names]
-    return [{"any": [{"type": "tag", "ids": ids}]}]
+    return [tags[n.strip().lower()] for n in names]
+
+
+def audience_filter(meta, key: str):
+    """Who gets it.
+
+    to: missing/'everyone'  -> whole list minus PROTECTED groups (unless included)
+    to: tag or list of tags -> only people with any of those tags
+    include: grayson        -> an 'everyone' email also goes to Grayson-only people
+    """
+    to = _names(meta.get("to", "everyone"))
+    included = {n.strip().lower() for n in _names(meta.get("include"))}
+    tags = kit_tags(key)
+
+    if [n.strip().lower() for n in to] == ["everyone"]:
+        skip = [t for group, names in PROTECTED.items() if group not in included
+                for t in names if t.strip().lower() not in included]
+        if not skip:
+            return None
+        return [{"none": [{"type": "tag", "ids": _ids(skip, tags)}]}]
+
+    return [{"any": [{"type": "tag", "ids": _ids(to, tags)}]}]
 
 
 def main():
@@ -71,7 +98,8 @@ def main():
     for issue in sorted((ROOT / "issues").glob("*.md")):
         receipt = receipts / (issue.stem + ".json")
         meta, body = parse_issue(issue)
-        if str(meta.get("status", "draft")).lower() != "send":
+        status = str(meta.get("status", "draft")).lower()
+        if status not in ("send", "kit-draft"):
             print(f"skip (not marked send): {issue.name}")
             continue
         if receipt.exists():
@@ -79,7 +107,7 @@ def main():
             continue
 
         send_at = send_time_utc(meta)
-        if send_at < datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"):
+        if status == "send" and send_at < datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"):
             raise SystemExit(f"{issue.name}: send_at {meta.get('send_at')} is in the past")
 
         payload = {
@@ -89,18 +117,19 @@ def main():
             "content": email_html(meta, body, repo),
             "public": bool(meta.get("public", True)),
             "published_at": send_at,
-            "send_at": send_at,
+            "send_at": None if status == "kit-draft" else send_at,
         }
         audience = audience_filter(meta, key)
         if audience:
             payload["subscriber_filter"] = audience
-            payload["public"] = bool(meta.get("public", False))  # partner emails stay private
+            if _names(meta.get("to", "everyone")) != ["everyone"]:
+                payload["public"] = bool(meta.get("public", False))  # group emails stay private
         result = post_to_kit(payload, key)
         bid = result.get("broadcast", {}).get("id")
         receipt.write_text(json.dumps(
             {"broadcast_id": bid, "send_at": send_at, "subject": meta["subject"]},
             indent=2))
-        print(f"scheduled {issue.name} → Kit broadcast {bid} at {send_at} UTC")
+        print(f"{'saved as Kit draft (not sent)' if status == 'kit-draft' else 'scheduled'} {issue.name} → Kit broadcast {bid} at {send_at} UTC")
 
 
 if __name__ == "__main__":
