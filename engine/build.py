@@ -108,7 +108,20 @@ def body_html(md_text: str, img_prefix: str) -> str:
     return re.sub(r"<img([^>]*)/?>", img, out)
 
 
+def custom_design_html(meta) -> str:
+    """Use a hand-designed HTML email from designs/ instead of the Pawsitive
+    Vibes look (set `design: designs/<file>.html` in the issue's settings)."""
+    page = (ROOT / meta["design"]).read_text(encoding="utf-8")
+    style = re.search(r"<style[^>]*>.*?</style>", page, re.S)
+    body = re.search(r"<body[^>]*>(.*)</body>", page, re.S)
+    if not body:
+        raise ValueError(f"{meta['design']}: no <body> found")
+    return (style.group(0) if style else "") + body.group(1)
+
+
 def email_html(meta, md_text: str, repo: str | None = None) -> str:
+    if meta.get("design"):
+        return custom_design_html(meta)
     prefix = image_base(repo)
     signoff_img = prefix + "images/kj-signoff.jpg"
     return f"""<div style="background:{WARM};padding:0;margin:0;">
