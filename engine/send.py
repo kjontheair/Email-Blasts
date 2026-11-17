@@ -5,6 +5,7 @@ handed to Kit gets a receipt in sent/ so it can never go out twice.
 """
 import json
 import os
+import time
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,11 +47,74 @@ def kit_tags(key: str) -> dict:
         after = page.get("end_cursor")
 
 
-# Tags whose people only get emails about that topic. An "everyone" email
-# leaves them out unless the issue says `include: grayson` (or the tag name).
+# Protected lists. People on a `source` tag only get emails about that topic,
+# UNLESS they also ticked one of the `also_chose` signup boxes (then they get
+# everything). Before every "everyone" email the robot rebuilds `only_tag` in
+# Kit = source people minus also_chose people, and leaves `only_tag` out.
+# An "everyone" email reaches them too when the issue says `include: grayson`.
 PROTECTED = {
-    "grayson": ["KJ's Krew:Send me Grayson Foundation updates"],
+    "grayson": {
+        "source": ["KJ's Krew:Send me Grayson Foundation updates"],
+        "also_chose": [
+            "KJ's Krew:Cat Life & The SuPURR Society 🐾",
+            "KJ's Krew:Positive Vibes for Your Life",
+            "KJ's Krew:Kinda Nerdy & Pop Culture 🎬",
+        ],
+        "only_tag": "Grayson Updates Only",
+    },
 }
+
+
+def kit_call(key, method, path, body=None, tries=6):
+    """Paced Kit API call (120/min limit) that waits out a 429."""
+    for attempt in range(tries):
+        time.sleep(0.6)
+        req = Request("https://api.kit.com/v4" + path, method=method,
+                      data=None if body is None else json.dumps(body).encode(),
+                      headers={"X-Kit-Api-Key": key, "Accept": "application/json",
+                               "Content-Type": "application/json"})
+        try:
+            with urlopen(req, timeout=60) as r:
+                raw = r.read()
+                return json.loads(raw) if raw else {}
+        except HTTPError as e:
+            if e.code == 429 and attempt < tries - 1:
+                time.sleep(30)
+                continue
+            raise SystemExit(f"Kit said no ({e.code}) on {method} {path}: {e.read().decode()[:300]}")
+
+
+def tag_members(key, tag_id):
+    ids, after = set(), None
+    while True:
+        page = kit_call(key, "GET", f"/tags/{tag_id}/subscribers?per_page=1000"
+                        + (f"&after={after}" if after else ""))
+        ids |= {s["id"] for s in page.get("subscribers", [])}
+        p = page.get("pagination", {})
+        if not p.get("has_next_page"):
+            return ids
+        after = p.get("end_cursor")
+
+
+def refresh_only_tag(key, group):
+    """Make Kit's only_tag hold exactly: source people who did NOT also choose
+    regular emails. Returns the only_tag id."""
+    cfg = PROTECTED[group]
+    tags = kit_tags(key)
+    source = set().union(*(tag_members(key, i) for i in _ids(cfg["source"], tags)))
+    chose = set().union(set(), *(tag_members(key, i) for i in _ids(cfg["also_chose"], tags)))
+    want = source - chose
+    only_id = tags.get(cfg["only_tag"].strip().lower())
+    if only_id is None:
+        only_id = kit_call(key, "POST", "/tags", {"name": cfg["only_tag"]})["tag"]["id"]
+    have = tag_members(key, only_id)
+    for sid in want - have:
+        kit_call(key, "POST", f"/tags/{only_id}/subscribers/{sid}", {})
+    for sid in have - want:
+        kit_call(key, "DELETE", f"/tags/{only_id}/subscribers/{sid}")
+    print(f"{cfg['only_tag']}: {len(want)} people (of {len(source)} on the list; "
+          f"{len(source & chose)} also chose regular emails)")
+    return only_id
 
 
 def _names(value):
@@ -69,20 +133,19 @@ def _ids(names, tags):
 def audience_filter(meta, key: str):
     """Who gets it.
 
-    to: missing/'everyone'  -> whole list minus PROTECTED groups (unless included)
+    to: missing/'everyone'  -> whole list minus each PROTECTED only_tag (unless included)
     to: tag or list of tags -> only people with any of those tags
-    include: grayson        -> an 'everyone' email also goes to Grayson-only people
+    include: grayson        -> an 'everyone' email also goes to Grayson-updates-only people
     """
     to = _names(meta.get("to", "everyone"))
     included = {n.strip().lower() for n in _names(meta.get("include"))}
     tags = kit_tags(key)
 
     if [n.strip().lower() for n in to] == ["everyone"]:
-        skip = [t for group, names in PROTECTED.items() if group not in included
-                for t in names if t.strip().lower() not in included]
+        skip = [refresh_only_tag(key, g) for g in PROTECTED if g not in included]
         if not skip:
             return None
-        return [{"none": [{"type": "tag", "ids": _ids(skip, tags)}]}]
+        return [{"none": [{"type": "tag", "ids": skip}]}]
 
     return [{"any": [{"type": "tag", "ids": _ids(to, tags)}]}]
 

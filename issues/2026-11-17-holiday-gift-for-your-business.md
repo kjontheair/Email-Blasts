@@ -1,7 +1,7 @@
 ---
 subject: A little holiday gift for your business 🎁
 preview: A 5-minute idea to help shoppers see your product as the perfect gift.
-status: draft
+status: sent-elsewhere  # KJ sent this from Mailchimp on 2026-11-17; never send from Kit
 send_at: 2026-11-17 09:00
 design: designs/2026-11-17-holiday-gift-for-your-business.html
 # to: (audience not chosen yet; KJ picks before this sends)

@@ -38,7 +38,8 @@ def members(tag_id):
 
 def main():
     names = tag_ids_by_name()
-    for group, tag_names in PROTECTED.items():
+    for group, cfg in PROTECTED.items():
+        tag_names = cfg["source"]
         own = {names[n.strip().lower()] for n in tag_names}
         people = sorted({sid for tid in own for sid in members(tid)})
         other_tags, only_this = Counter(), 0
